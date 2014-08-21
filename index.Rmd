@@ -1,0 +1,153 @@
+---
+title: "Practical Machine Learning Assignemt"
+author: "Catherine Pargeter"
+date: "August 21, 2014"
+output: html_document
+---
+
+# Summary
+To build a model to determine whether participants correctly performed exercises, data was obtained from the [Qualitative Activity Recognition of Weight Lifting Exercises] (http://groupware.les.inf.puc-rio.br/work.jsf?p1=11201).  This data, provided more than 150 data points on almost 20,000 trials sets of collected during exercise.  A principal component analysis was used, filtering the data to account for 96% of the variance with 10 data points.  These were then used in a variety of models, including Support Vector Machines, Random Forest, K-nearest neighbor, Naive Bayes and Linear Discriminant Analysis.  The best model was determined to be the Support Vector Machine model, with accuracy of 98%.
+
+# Methodology
+## Data Collection
+The data used in this analysis was obtained from the Weight Lifting Exercise dataset [^1].  This dataset included on 19622 observations from participants who each conducted the exercises correctly and incorrectly.  Recordings were made of more than 150 data points for each participant, and 5 categories of correctness were included - 1 measure that indicated correct exercise form and 4 that indicated different incorrect forms.  
+
+```{r libraries, echo=FALSE, include=FALSE}
+library(caret)
+library(reshape2)
+library(RANN)
+library(MASS)
+library(randomForest)
+library(e1071)
+library(rpart)
+library(RColorBrewer)
+```
+```{r import, echo=FALSE, cache=TRUE}
+trainurl<-"https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+testurl<-"https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+tr = tempfile()
+tt= tempfile()
+
+download.file(trainurl, tr, method="curl")
+baseData<-read.csv(tr,na.strings=c("NA","#DIV/0!"))
+
+unlink(tr)
+```
+## Analysis
+
+The initial "training" dataset was divided 70/30 into testing and training, and the initial "testing" was further split 70/30 into testing and cross validation.  The initial data was first preprocessed to remove columns that did not contain any data in 90% or more of the rows.
+
+```{r setup, echo=FALSE, cache=TRUE}
+bD <- baseData[,unlist(lapply(baseData, function(x) !(sum(is.na(x))/length(x)>.9)))]
+inTrain<-createDataPartition(y=bD$classe,p=.7,list=F)
+train<-bD[inTrain,]
+test<-bD[-inTrain,]
+
+dataForTraining<-train[,8:60]
+dataForTest<-test[,8:60]
+
+inTest<-createDataPartition(y=dataForTest$classe,p=.7,list=F)
+test<-dataForTest[inTest,]
+cv<-dataForTest[-inTest,]
+
+yTrain<-dataForTraining[,53]
+yTest<-test[,53]
+yCV<-cv[,53]
+
+plot(yTrain,col=brewer.pal(5, "Set2"))
+```
+
+Pricinpal Component Analysis was then used to exclude variable that were highly correlated and include only those variables that captured the variance within the data.  The PCA showed that including 10 of the 52 remaining variables accounted for 96% of the data variance.  The following plot shows the decrease in the variance accounted for by each of the top 10 factors.
+
+```{r preProcess, echo=FALSE}
+prComp<-prcomp(dataForTraining[,-53])
+screeplot(prComp,15,col=brewer.pal(8, "Set2") )
+PCA<-preProcess(dataForTraining[,-53],method="pca", pcaComp = 10)
+training<-predict(PCA,dataForTraining[,-53])
+testing<-predict(PCA, test[,-53])
+CV<-predict(PCA,cv[,-53])
+```
+
+Next, model were fit using k-nearest neighbors, random forests, Naive Bayes, linear discriminant analysis, and support vector machine.  The accuracy of the model on the testing data was examined, showing that the KNN, Random Forset and SVM models had far superior accuracy.   
+
+```{r modelFitting, echo=FALSE}
+mod.knn<-knn3(yTrain~.,data=training,k = 3)
+predKNN<-as.data.frame(predict(mod.knn,training))
+predictKNN<-names(predKNN)[apply(predKNN,1,which.max)]
+testingKNN<-as.data.frame(predict(mod.knn,testing))
+testKNN<-names(testingKNN)[apply(testingKNN,1,which.max)]
+
+#Random Forests
+mod.rf<-randomForest(yTrain ~ ., data = training)
+predictRF<-predict(mod.rf,training)
+testRF<-predict(mod.rf,testing)
+
+#Naive Bayes
+mod.nb<-naiveBayes(yTrain ~ .,data=training)
+predictNB<-predict(mod.nb,training)
+testNB<-predict(mod.nb,testing)
+
+#LDA
+mod.lda<-lda(yTrain ~., data=training)
+predictLDA<-predict(mod.lda,training)$class
+testLDA<-predict(mod.lda,testing)$class
+
+#svm
+mod.svm<-svm(yTrain~., data=training, cost = 100, gamma = 1)
+predictSVM<-predict(mod.svm,training)
+testSVM<-predict(mod.svm,testing)
+
+print(paste("Testing: K-Nearest Neighbor(k=3): ", 100*round(sum(testKNN == yTest)/length(yTest),4)))
+table(testKNN,yTest)
+print( paste("Testing: Random Forest: ", 100*round(sum(testRF == yTest)/length(yTest),4)))
+table(testRF,yTest)
+print(paste("Testing: Naive Bayes: ", 100* round(sum(testNB == yTest)/length(yTest),4)))
+table(testNB,yTest)
+print(paste("Testing: LDA: ", 100*round(sum(testLDA == yTest)/length(yTest),4)))
+table(testLDA,yTest)
+print(paste("Testing: SVM: ", 100*round(sum(testSVM == yTest)/length(yTest),4)))
+table(testSVM,yTest)
+
+PlottingData<-data.frame(testKNN,testRF,testNB,testLDA,testSVM,yTest)
+PD<- data.frame(SVM=with(PlottingData,tapply(testSVM==yTest, yTest, function(x) sum(x)/length(x))),
+        RF = with(PlottingData,tapply(testRF==yTest, yTest, function(x) sum(x)/length(x))),
+        KNN = with(PlottingData,tapply(testKNN==yTest, yTest, function(x) sum(x)/length(x))),
+        NB = with(PlottingData,tapply(testNB==yTest, yTest, function(x) sum(x)/length(x))),
+        LDA = with(PlottingData,tapply(testLDA==yTest, yTest, function(x) sum(x)/length(x))))
+PD.m<-melt(as.matrix(PD))
+p<-ggplot(PD.m, aes(x=Var1, y=value, colour=Var2))
+p+geom_point()+
+        scale_colour_manual(values=brewer.pal(5, "Set2"))+
+        labs(col= "Model",
+        x = "Actual Class",
+        y = "% Correctly identified",
+        title = "Percent Correct identification by model")
+        
+```
+
+Based on this analysis, the SVM, K-nearest neighbor and the Random Forest models showed to be the best fits.  Next, an average model, combine these three with a majority votes approach was found.  However, based on the testing data, the SVM model was superior to that of the average model.
+
+```{r, testFitting, echo=FALSE}
+TestPred<-data.frame(testSVM, testKNN, testRF)
+t<-apply(TestPred,1,function(x) names(which.max(table(x))))
+print (paste("Performance of average model: ",100*round(sum(t == yTest)/length(yTest),4)))
+table(t,yTest)
+print (paste("Performance of RF model: ",100*round(sum(testRF == yTest)/length(yTest),2)))
+print (paste("Performance of KNN model: ",100*round(sum(testKNN == yTest)/length(yTest),2)))
+print (paste("Performance of SVM model: ",100*round(sum(testSVM == yTest)/length(yTest),2)))
+
+```
+
+In order to assess the out of sample accuracy of the SVM model, it was applied to the Cross Validation data set.  This showed that the model had a correct prediction rate of 98%.  The model was also used on 20 test cases and was able to accurately predict all 20.
+
+```{r crossVal, echo=FALSE}
+cvSVM<-predict(mod.svm,CV)
+table(cvSVM,yCV)
+
+print (paste("Performance of out of sample SVM model: ",100*round(sum(cvSVM == yCV)/length(yCV),2)))
+```
+
+
+[^1]: Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.
+
+Read more: http://groupware.les.inf.puc-rio.br/har#ixzz38h490KfI
